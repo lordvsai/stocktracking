@@ -6,115 +6,117 @@ import pandas as pd
 
 st.set_page_config(page_title="VibeStock Pro", layout="wide")
 
-# --- 1. SEARCH LOGIC ---
-st.title("📈 VibeStock Pro Dashboard")
-search_term = st.text_input("Start typing a company (e.g., 'Hindalco' or 'Reliance')", key="main_search")
-
-# State management for current stock
-if 'current_ticker' not in st.session_state:
-    st.session_state.current_ticker = "AAPL"
+# --- Initialize Session States ---
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = ["AAPL", "RELIANCE.NS"]
+if 'current_ticker' not in st.session_state:
+    st.session_state.current_ticker = "AAPL"
+if 'chart_period' not in st.session_state:
+    st.session_state.chart_period = "1y"
 
-# Dropdown suggestion logic
-if len(search_term) > 1:
-    search = yf.Search(search_term, max_results=5)
-    if search.quotes:
-        options = {f"{q['shortname']} ({q['symbol']})": q['symbol'] for q in search.quotes}
-        selection = st.selectbox("Search Results:", options.keys())
-        if selection:
+# --- 1. SEARCH & ADD (Single Combined Interaction) ---
+st.title("📊 Global Stock Vibe")
+
+# Search query
+query = st.text_input("Search Company Name (e.g. 'Hindalco', 'Google')", placeholder="Type and press Enter")
+
+if query:
+    search_results = yf.Search(query, max_results=5).quotes
+    if search_results:
+        # This creates the "Screener.in" dropdown effect
+        options = {f"{q['shortname']} ({q['symbol']})": q['symbol'] for q in search_results}
+        selection = st.selectbox("Select the correct match:", ["Select..."] + list(options.keys()))
+        
+        if selection != "Select...":
             st.session_state.current_ticker = options[selection]
+            # Add to watchlist button appears only for the selected stock
+            if st.session_state.current_ticker not in st.session_state.watchlist:
+                if st.button(f"➕ Add {st.session_state.current_ticker} to Watchlist"):
+                    st.session_state.watchlist.append(st.session_state.current_ticker)
+                    st.rerun()
 
-# --- 2. THE ACTION ZONE ---
+# --- 2. MAIN CHART SECTION ---
 ticker = st.session_state.current_ticker
 stock_obj = yf.Ticker(ticker)
 
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.subheader(f"Analyzing: {ticker}")
-with col2:
-    if ticker not in st.session_state.watchlist:
-        if st.button("➕ Add to Watchlist"):
-            st.session_state.watchlist.append(ticker)
-            st.rerun()
+# Fetch Data based on selected period
+# Mapping user-friendly names to yfinance periods
+period_map = {
+    "1 Day": "1d", "1 Month": "1mo", "3 Months": "3mo", 
+    "6 Months": "6mo", "1 Year": "1y", "5 Years": "5y", 
+    "10 Years": "10y", "Lifetime": "max"
+}
 
-# --- 3. INDICATOR PANEL ---
-with st.expander("📊 Chart Settings & Technicals"):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        interval = st.selectbox("Interval", ["1wk", "1d", "15m"], index=1)
-        period = "max" if interval == "1wk" else "2y" if interval == "1d" else "1d"
-    with c2:
-        ma_list = st.multiselect("Moving Averages", ["50 DMA", "200 DMA", "200 WMA"], default=["50 DMA"])
-    with c3:
-        overlays = st.multiselect("Other Indicators", ["Bollinger Bands", "RSI"], default=["RSI"])
+# Auto-determine interval based on period
+current_p = st.session_state.chart_period
+interval = "15m" if current_p == "1d" else "1d" if current_p in ["1mo", "3mo", "6mo", "1y"] else "1wk"
 
-# --- 4. DATA PROCESSING ---
-data = stock_obj.history(period=period, interval=interval)
-
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+data = stock_obj.history(period=current_p, interval=interval)
 
 if not data.empty:
-    # Calculations
-    if "50 DMA" in ma_list: data['50DMA'] = data['Close'].rolling(50).mean()
-    if "200 DMA" in ma_list: data['200DMA'] = data['Close'].rolling(200).mean()
-    if "200 WMA" in ma_list: data['200WMA'] = data['Close'].rolling(200).mean()
-    if "Bollinger Bands" in overlays:
-        sma = data['Close'].rolling(20).mean()
-        std = data['Close'].rolling(20).std()
-        data['BB_Up'] = sma + (std * 2)
-        data['BB_Low'] = sma - (std * 2)
-    if "RSI" in overlays:
-        data['RSI'] = calculate_rsi(data['Close'])
-
-    # --- 5. THE CHART ---
-    # Create Subplots: Row 1 for Price, Row 2 for RSI (if selected)
-    rows = 2 if "RSI" in overlays else 1
-    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3] if rows==2 else [1])
-
-    # Price Line
-    fig.add_trace(go.Scatter(x=data.index, y=data['Close'], name="Price", line=dict(color="#00D4FF")), row=1, col=1)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=data.index, y=data['Close'], name="Price", line=dict(color="#00D4FF", width=2)))
     
-    # Overlays
-    if "50 DMA" in ma_list: fig.add_trace(go.Scatter(x=data.index, y=data['50DMA'], name="50 DMA"), row=1, col=1)
-    if "200 DMA" in ma_list: fig.add_trace(go.Scatter(x=data.index, y=data['200DMA'], name="200 DMA"), row=1, col=1)
-    if "200 WMA" in ma_list: fig.add_trace(go.Scatter(x=data.index, y=data['200WMA'], name="200 WMA", line=dict(dash="dot")), row=1, col=1)
-    if "Bollinger Bands" in overlays:
-        fig.add_trace(go.Scatter(x=data.index, y=data['BB_Up'], name="BB Upper", line=dict(width=0)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=data.index, y=data['BB_Low'], name="BB Lower", fill='tonexty', line=dict(width=0)), row=1, col=1)
+    # Simple DMA Overlays (50 & 200)
+    if current_p not in ["1d"]:
+        data['50DMA'] = data['Close'].rolling(50).mean()
+        data['200DMA'] = data['Close'].rolling(200).mean()
+        fig.add_trace(go.Scatter(x=data.index, y=data['50DMA'], name="50 DMA", line=dict(color="orange", width=1)))
+        fig.add_trace(go.Scatter(x=data.index, y=data['200DMA'], name="200 DMA", line=dict(color="red", width=1)))
 
-    # RSI Subplot
-    if "RSI" in overlays:
-        fig.add_trace(go.Scatter(x=data.index, y=data['RSI'], name="RSI", line=dict(color="yellow")), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-
-    fig.update_layout(template="plotly_dark", height=700, xaxis_rangeslider_visible=False)
+    fig.update_layout(template="plotly_dark", height=500, margin=dict(l=20, r=20, t=20, b=20), xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 6. WATCHLIST & EXPORT ---
-st.divider()
-st.subheader("📁 My Global Watchlist")
-if st.session_state.watchlist:
-    wl_data = []
-    for t in st.session_state.watchlist:
-        s = yf.Ticker(t).fast_info
-        wl_data.append({"Ticker": t, "Price": s['lastPrice'], "52W High": s['yearHigh']})
-    
-    df_wl = pd.DataFrame(wl_data)
-    st.dataframe(df_wl, use_container_width=True)
-    
-    # Download Button
-    csv = df_wl.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Watchlist as CSV", data=csv, file_name="my_watchlist.csv", mime="text/csv")
+    # --- Timeframe Buttons (At the Bottom of Graph) ---
+    st.write("Select Timeframe:")
+    cols = st.columns(len(period_map))
+    for i, (label, p_code) in enumerate(period_map.items()):
+        if cols[i].button(label):
+            st.session_state.chart_period = p_code
+            st.rerun()
 
-# --- 7. FILINGS ---
-st.subheader("📰 Recent Filings & News")
-news = stock_obj.news[:5]
-for n in news:
-    st.markdown(f"**[{n['title']}]({n['link']})**")
+# --- 3. WATCHLIST WITH COLOR-CODED CHANGES ---
+st.divider()
+st.subheader("📋 Your Watchlist")
+
+if st.session_state.watchlist:
+    # Use a container to make it scrollable
+    with st.container(height=400):
+        # Header Row
+        h1, h2, h3, h4 = st.columns([2, 1, 1, 1])
+        h1.write("**Stock**")
+        h2.write("**Price**")
+        h3.write("**Change %**")
+        h4.write("**Action**")
+        st.divider()
+
+        for t in st.session_state.watchlist:
+            try:
+                s = yf.Ticker(t)
+                # Getting clean data
+                info = s.fast_info
+                price = info['lastPrice']
+                # Calculate change from previous close
+                prev_close = info['previousClose']
+                change_pct = ((price - prev_close) / prev_close) * 100
+                
+                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+                
+                # Column 1: Clickable Name to switch chart
+                if c1.button(f"{t}", key=f"btn_{t}"):
+                    st.session_state.current_ticker = t
+                    st.rerun()
+                
+                # Column 2: Price
+                c2.write(f"${price:,.2f}" if ".NS" not in t else f"₹{price:,.2f}")
+                
+                # Column 3: Change % (Red/Green)
+                color = "green" if change_pct >= 0 else "red"
+                c3.markdown(f":{color}[{'+' if change_pct > 0 else ''}{change_pct:.2f}%]")
+                
+                # Column 4: Remove Button
+                if c4.button("🗑️", key=f"del_{t}"):
+                    st.session_state.watchlist.remove(t)
+                    st.rerun()
+            except:
+                continue
