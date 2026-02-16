@@ -2,91 +2,97 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 from streamlit_searchbox import st_searchbox
-import pandas as pd
+from datetime import datetime
 
+# --- UI CONFIG & STYLING ---
 st.set_page_config(page_title="VibeStock Pro", layout="wide")
 
-# --- 1. SEARCH LOGIC ---
+st.markdown("""
+    <style>
+    .metric-card {
+        background-color: #111827;
+        padding: 15px;
+        border-radius: 12px;
+        border: 1px solid #374151;
+        text-align: center;
+    }
+    .metric-label { color: #9ca3af; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+    .metric-value { color: #ffffff; font-size: 20px; font-weight: 700; margin-top: 5px; }
+    .news-card {
+        background-color: #1f2937;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        border-left: 4px solid #3b82f6;
+    }
+    .news-title { color: #f3f4f6; font-size: 14px; font-weight: 600; text-decoration: none; }
+    .news-title:hover { color: #3b82f6; }
+    .news-meta { color: #6b7280; font-size: 11px; margin-top: 5px; }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- SEARCH FUNCTION ---
 def search_stocks(searchterm: str):
     if not searchterm or len(searchterm) < 2: return []
     try:
-        search = yf.Search(searchterm, max_results=8)
+        search = yf.Search(searchterm, max_results=5)
         return [(f"{q['shortname']} ({q['symbol']})", q['symbol']) for q in search.quotes]
     except: return []
 
-st.title("📈 VibeStock Pro")
+# --- APP LAYOUT ---
+with st.container():
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        selected_ticker = st_searchbox(search_stocks, placeholder="Search Ticker...", key="stock_search")
+    with c2:
+        st.write(f"**Date:** {datetime.now().strftime('%Y-%m-%d')}")
 
-selected_ticker = st_searchbox(search_stocks, placeholder="Search (e.g. Hindalco, Google...)", key="stock_search")
-
-if 'watchlist' not in st.session_state: st.session_state.watchlist = ["AAPL", "RELIANCE.NS"]
-if 'period' not in st.session_state: st.session_state.period = "1y"
-if selected_ticker: st.session_state.current_ticker = selected_ticker
-
-ticker = st.session_state.get('current_ticker', "AAPL")
+ticker = selected_ticker if selected_ticker else "AAPL"
 stock_obj = yf.Ticker(ticker)
 
-# --- 2. TECHNICAL SETTINGS PANEL ---
-with st.expander("🛠️ Technical Indicators"):
-    c1, c2, c3 = st.columns(3)
-    show_50dma = c1.checkbox("50 DMA", value=True)
-    show_200dma = c1.checkbox("200 DMA")
-    show_200wma = c2.checkbox("200 WMA")
-    show_bb = c2.checkbox("Bollinger Bands")
-    show_rsi = c3.checkbox("RSI (Relative Strength)")
+# --- MAIN CONTENT AREA ---
+main_col, news_col = st.columns([3, 1])
 
-# --- 3. DATA & CALCULATIONS ---
-p_map = {"1D": "1d", "1M": "1mo", "3M": "3mo", "6M": "6mo", "1Y": "1y", "5Y": "5y", "10Y": "10y", "MAX": "max"}
-interval = "15m" if st.session_state.period == "1d" else "1d"
-data = stock_obj.history(period=st.session_state.period, interval=interval)
+with main_col:
+    try:
+        info = stock_obj.info
+        hist = stock_obj.history(period="1y")
+        
+        # Row 1: The Claude-Style Metrics
+        m_cols = st.columns(4)
+        top_metrics = [
+            ("Price", f"{info.get('currentPrice', 0):.2f}"),
+            ("Market Cap", f"{info.get('marketCap', 0)/1e12:.2f}T"),
+            ("P/E Ratio", info.get('trailingPE', 'N/A')),
+            ("Day Change", f"{info.get('regularMarketChangePercent', 0):.2f}%")
+        ]
+        
+        for i, (label, val) in enumerate(top_metrics):
+            m_cols[i].markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{val}</div></div>', unsafe_allow_html=True)
 
-if not data.empty:
-    # Math for Indicators
-    if show_50dma: data['50DMA'] = data['Close'].rolling(50).mean()
-    if show_200dma: data['200DMA'] = data['Close'].rolling(200).mean()
-    if show_200wma: 
-        # For a true 200 WMA, we fetch weekly data separately
-        weekly_data = stock_obj.history(period="max", interval="1wk")
-        data['200WMA'] = weekly_data['Close'].rolling(200).mean()
-    if show_bb:
-        sma = data['Close'].rolling(20).mean()
-        std = data['Close'].rolling(20).std()
-        data['BB_Up'] = sma + (std * 2)
-        data['BB_Low'] = sma - (std * 2)
+        # Row 2: The Interactive Chart
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], name="Price", line=dict(color="#3b82f6", width=2), fill='tozeroy', fillcolor='rgba(59, 130, 246, 0.1)'))
+        fig.update_layout(template="plotly_dark", height=450, margin=dict(l=0, r=0, t=20, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+        st.plotly_chart(fig, use_container_width=True)
+        
+    except Exception as e:
+        st.error("Could not fetch data for this ticker.")
+
+# --- THE LIVE NEWS FEED (The "Right Wing") ---
+with news_col:
+    st.markdown("### 📰 Market News")
+    news_items = stock_obj.news
     
-    # --- 4. THE CHART ---
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=data.index, y=data['Close'], name="Price", line=dict(color="#00D4FF", width=2)))
-    
-    if show_50dma: fig.add_trace(go.Scatter(x=data.index, y=data['50DMA'], name="50 DMA", line=dict(color="orange")))
-    if show_200dma: fig.add_trace(go.Scatter(x=data.index, y=data['200DMA'], name="200 DMA", line=dict(color="red")))
-    if show_200wma: fig.add_trace(go.Scatter(x=data.index, y=data['200WMA'], name="200 WMA", line=dict(color="purple", dash="dash")))
-    
-    if show_bb:
-        fig.add_trace(go.Scatter(x=data.index, y=data['BB_Up'], name="BB Upper", line=dict(width=0), showlegend=False))
-        fig.add_trace(go.Scatter(x=data.index, y=data['BB_Low'], name="BB Lower", fill='tonexty', line=dict(width=0), fillcolor='rgba(173,216,230,0.2)'))
-
-    fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Timeframe Buttons
-    cols = st.columns(len(p_map))
-    for i, (label, p_code) in enumerate(p_map.items()):
-        if cols[i].button(label):
-            st.session_state.period = p_code
-            st.rerun()
-
-# --- 5. FUNDAMENTALS & WATCHLIST ---
-st.divider()
-try:
-    info = stock_obj.info
-    st.subheader(f"💎 Fundamentals: {info.get('longName', ticker)}")
-    f1, f2, f3, f4 = st.columns(4)
-    f1.metric("Market Cap", f"{info.get('marketCap', 0):,}")
-    f2.metric("P/E Ratio", info.get('trailingPE', 'N/A'))
-    f3.metric("52W High", info.get('fiftyTwoWeekHigh', 'N/A'))
-    f4.metric("Dividend Yield", f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "0%")
-except: st.write("Fundamental data currently unavailable for this ticker.")
-
-st.divider()
-st.subheader("📋 Watchlist")
-# ... (Watchlist code remains the same as previous version)
+    if not news_items:
+        st.write("No recent news found.")
+    else:
+        for item in news_items[:6]:  # Show top 6 stories
+            # Convert timestamp to readable time
+            pub_time = datetime.fromtimestamp(item['providerPublishTime']).strftime('%H:%M')
+            st.markdown(f"""
+                <div class="news-card">
+                    <a href="{item['link']}" target="_blank" class="news-title">{item['title']}</a>
+                    <div class="news-meta">{item['publisher']} • {pub_time}</div>
+                </div>
+            """, unsafe_allow_html=True)
